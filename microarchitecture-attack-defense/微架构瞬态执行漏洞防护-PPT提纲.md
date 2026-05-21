@@ -1,0 +1,342 @@
+# 微架构瞬态执行漏洞防护机制 · PPT提纲
+
+> 基于《微架构瞬态执行漏洞防护机制洞察》v1.0（2026年5月）
+
+---
+
+## 一、首页
+
+### 一句话总结
+
+> **从Spectre到IPRED：2018年至今，CPU推测执行漏洞驱动了一场横跨硅片→微码→内核→编译器→虚拟化→浏览器的全栈防御体系重构，旧硬件性能损失可达60%，新硬件正从"打补丁"迈向"架构原生免疫"。**
+
+### 洞察方向
+
+现代高性能处理器通过推测执行（Speculative Execution）激进优化性能，但其在推测路径上的微架构副作用（缓存、分支预测器、填充缓冲器等）催生了数十种侧信道攻击变体，使得非特权攻击者可以窃取内核内存、跨进程数据、虚拟机机密甚至SGX飞地密钥。本洞察系统性梳理 Intel/AMD/ARM 硬件防御、Linux内核软件防御、编译器/虚拟化/浏览器防御的完整技术栈及其效能对比。
+
+### 关键趋势
+
+1. **从被动打补丁到主动硬件免疫**：Intel Granite Rapids（IPRED）、AMD Zen 4、ARM Cortex-X3（CSV2_3）已将推测隔离硬化到硅片中
+2. **防御纵深持续下沉**：缓解从OS内核向编译器/运行时/JIT引擎/浏览器沙箱逐层扩展
+3. **性能与安全的永恒博弈**：旧硬件全套防御损失30-60%性能；新硬件降至1-5%，差距持续拉大
+4. **SMT（同时多线程）仍是阿喀琉斯之踵**：Core Scheduling缓解但未根除，安全管理需权衡
+5. **RISC-V开放硬件带来新机遇**：可审计的安全验证成为差异化竞争力
+
+### 价值识别
+
+| 价值维度 | 量化/定性描述 |
+|----------|--------------|
+| **安全合规** | 云厂商（AWS/Azure/GCP）均要求已修补硬件；未缓解系统面临合规风险 |
+| **性能成本** | 旧硬件性能损失30-60%；新硬件<5%；驱动硬件更新换代的经济决策 |
+| **跨层协同** | 仅硬件缓解不足，需硅片+微码+内核+编译器+运行时全栈配合 |
+| **威胁面评估** | 跨特权级攻击防护度高；跨VM/SGX攻击仍有中低风险缺口 |
+| **竞争力差异** | ARM架构原语（CSV2/SB/BTI）设计前瞻性优于x86的打补丁模式 |
+
+### 技术识别
+
+```
+全栈防御技术栈：
+┌──────────────────────────────────────────────────┐
+│  浏览器层   │ 站点隔离 | 定时器降级 | JIT索引掩码   │
+│  运行时层   │ prctl()推测控制 | 常量时间算法       │
+│  编译器层   │ Retpoline | SLH | LFENCE屏障         │
+│  内核层     │ KPTI | IBRS/eIBRS | VERW | RSB填充   │
+│  虚拟化层   │ L1D Flush | Core Scheduling | IBPB    │
+│  微码/固件  │ IBPB | BHI_DIS_S | AGESA | Zenbleed   │
+│  硅片层     │ IPRED | CSV2_3 | DDP | FSFP          │
+└──────────────────────────────────────────────────┘
+```
+
+### 重要玩家
+
+| 角色 | 组织 | 代表性贡献 |
+|------|------|-----------|
+| **漏洞发现** | Google Project Zero | Spectre/Meltdown首次披露 |
+| **漏洞发现** | ETH Zurich (ComSec) | Retbleed, Zenbleed |
+| **漏洞发现** | VUSec (VU Amsterdam) | LVI, MDS系列 |
+| **硬件防御** | Intel | eIBRS, IPRED, BHI_DIS_S, VERW |
+| **硬件防御** | AMD | LFENCE序列化, PSFD, Inception缓解 |
+| **硬件防御** | ARM | CSV2系列原语, SB指令, BTI, PAC |
+| **OS内核** | Linux内核社区 | KPTI, Retpoline, prctl推测控制API |
+| **编译器** | GCC/LLVM社区 | -mspeculative-load-hardening, Retpoline |
+| **浏览器** | Google Chrome | 严格站点隔离, V8 JIT缓解 |
+| **云平台** | AWS/Azure/GCP | 全栈安全加固与主机替换 |
+| **虚拟化** | VMware/KVM/Xen/Hyper-V | HyperClear, Core Scheduler, VM边界清除 |
+
+---
+
+## 二、洞察资料汇总（重要文献 Top 30）
+
+| # | 发布件 | 类型 | 发布者 | 单位 | 时间 | 一句话总结 |
+|---|--------|------|--------|------|------|-----------|
+| 1 | Spectre Attacks: Exploiting Speculative Execution | 学术论文 | Kocher, Horn等 | Google Project Zero | 2019.05 | 首次系统性揭示条件/间接分支推测执行可导致跨特权级内存泄漏 |
+| 2 | Meltdown: Reading Kernel Memory from User Space | 学术论文 | Lipp, Schwarz, Gruss等 | TU Graz | 2018.08 | 利用异常时推测读取绕过内核内存隔离，主要影响Intel |
+| 3 | A Systematic Evaluation of Transient Execution Attacks and Defenses | 学术论文 | Canella, Van Bulck等 | TU Graz/imec-DistriNet | 2019.08 | 系统化分类瞬态执行攻击与防御，首次提出统一分析框架 |
+| 4 | LVI: Hijacking Transient Execution through Load Value Injection | 学术论文 | Van Bulck等 | imec-DistriNet | 2020.05 | 将攻击者数据注入SGX飞地推测执行路径，逆转SGX安全假设 |
+| 5 | RETBLEED: Arbitrary Speculative Code Execution with Return Instructions | 学术论文 | Wikner, Razavi | ETH Zurich | 2022.08 | 利用RET指令推测劫持实现任意代码推测执行，影响Intel/AMD |
+| 6 | Zenbleed (CVE-2023-20593) | 安全披露 | Ormandy, T. | Google Project Zero | 2023.07 | 发现AMD Zen 2寄存器重命名竞争条件导致跨线程寄存器泄漏 |
+| 7 | RIDL: Rogue In-Flight Data Load (MDS系列) | 学术论文 | Van Schaik等 | VUSec | 2019.05 | 揭示CPU内部填充缓冲区中的未提交数据可被推测采样窃取 |
+| 8 | GDS/Downfall (CVE-2022-40982) | 安全披露 | Intel / Moghimi | Intel / UCSD | 2023.08 | AVX指令集收集操作可泄漏SIMD寄存器中的陈旧数据 |
+| 9 | KAISER: Hiding the Kernel from User Space | 学术论文 | Gruss等 | TU Graz | 2017.06 | 提出内核页表隔离技术(KPTI前身)，成为Meltdown软件防线基础 |
+| 10 | Retpoline: Software Construct for Preventing BTI | 技术方案 | Turner, P. | Google | 2018.01 | 使用RET指令替代间接跳转，防止Spectre v2分支目标注入 |
+| 11 | Speculative Load Hardening | 编译器方案 | Carruth, C. | Google/LLVM | 2018.10 | 编译器级推测加载强化，在条件分支后插入数据依赖保护代码 |
+| 12 | Analysis of Speculative Execution Side Channels | 白皮书 | Intel | Intel | 2018.05 | Intel官方发布IBRS/STIBP/IBPB三种推测控制MSR完整定义 |
+| 13 | Enhanced IBRS Technical Documentation | 技术文档 | Intel | Intel | 2019+ | eIBRS实现单次MSR写入即可跨特权级隔离，含自动STIBP |
+| 14 | Branch History Injection (BHI) | 安全公告 | Intel | Intel | 2022.03 | 分支历史注入可使eIBRS失效，需BHI_DIS_S或软件序列缓解 |
+| 15 | Software Techniques for Managing Speculation (AMD) | 白皮书 | AMD | AMD | 2018+ | AMD官方推测管理指南，明确LFENCE序列化行为与IBPB差异 |
+| 16 | AMD-SB-7005: Inception (CVE-2023-20569) | 安全公告 | AMD | AMD | 2023.08 | Zen 3/4返回预测训练中毒漏洞，需增强IBPB/RSB清除 |
+| 17 | Cache Speculation Side-channels (ARM) | 白皮书 | ARM | ARM | 2024.03 | ARM推测执行漏洞体系完整说明，涵盖CSV2/CSV3及架构响应 |
+| 18 | FEAT_CSV2: Branch Prediction Isolation | 架构规范 | ARM | ARM | 2018+ | ARMv8.2+硬件自动跨特权级清除分支预测器，无需软件干预 |
+| 19 | Linux Kernel PTI/KPTI Implementation | 内核源码 | Linux社区 | Linux Foundation | 2018+ | arch/x86/entry/entry_64.S实现用户/内核页表隔离 |
+| 20 | /sys/devices/system/cpu/vulnerabilities | 内核特性 | Linux社区 | Linux Foundation | 2018+ | 通过sysfs实时暴露15+漏洞状态与缓解信息 |
+| 21 | prctl() Speculation Control API | 内核API | Linux社区 | Linux Foundation | 2018+ | 用户态进程通过prctl自主控制SSBD和间接分支推测行为 |
+| 22 | KVM Speculation Control & CPU Buffer Clearing | 虚拟化 | KVM社区 | Linux Foundation | 2019+ | VMEntry/VMExit时VERW清除与RSB填充，防御跨VM攻击 |
+| 23 | Core Scheduling for SMT Protection | 内核特性 | Linux社区 | Linux Foundation | 2020+ | 确保互不信任的进程/VM不同时运行在SMT兄弟线程上 |
+| 24 | Site Isolation (Chrome) | 浏览器方案 | Chromium Team | Google | 2018+ | 每个渲染进程限制于同一站点，消除Spectre跨站数据窃取 |
+| 25 | Project Fission (Firefox) | 浏览器方案 | Mozilla | Mozilla | 2021 | Firefox站点隔离架构，每源独立渲染进程 |
+| 26 | Spectre Mitigations in V8 JIT | JIT方案 | V8 Team | Google | 2018+ | 索引掩码+推测污染追踪+LFENCE插入保护JS引擎 |
+| 27 | BoringSSL Side Channel Defenses | 密码学库 | Google | Google | 持续更新 | 严格常量时间算法+推测屏障原语保护密钥操作 |
+| 28 | JDK 11 Speculative Execution Mitigations | 运行时 | Oracle | Oracle | 2018 | Java JIT使用索引掩码+AOT编译器支持Retpoline |
+| 29 | Intel IPRED & DDP Hardware Protections | 硬件特性 | Intel | Intel | 2024 | Granite Rapids引入间接预测器隔离与数据依赖预取器 |
+| 30 | Hardware-Software Contracts for Secure Speculation | 学术论文 | Guarnieri等 | UC Riverside | 2021.05 | 提出硬件-软件安全推测合约的形式化框架 |
+
+---
+
+## 三、PPT正文
+
+### 【Slide N: WHY】—— 为什么这个洞察重要？
+
+**核心问题**：现代CPU的性能基石——推测执行，本身就是一个系统级安全漏洞的根源。
+
+- **2018年1月**，Google Project Zero公开披露Spectre和Meltdown，标志着高性能计算进入"推测安全"时代
+- 此后**19种以上**瞬态执行攻击变体被发现，覆盖Intel/AMD/ARM所有主流架构
+- 攻击效果：非特权用户态代码 → 窃取内核内存 → 跨VM窃取宿主数据 → 窃取SGX飞地密钥 → 浏览器内窃取跨站数据
+- **根本矛盾**：推测执行提升性能的核心机制（分支预测、缓存预取、乱序执行）与安全隔离原则（特权级、进程、VM、站点边界）存在结构性冲突
+
+**为什么到今天仍重要**（2026年视角）：
+- 仍有数十亿旧设备运行未修复或部分修复的系统
+- 新攻击面不断被发现（ITS/IBPD, 2024年）
+- 防御措施的累积性能开销迫使企业在安全与成本间艰难权衡
+
+> **一句话：这不是一个被解决的历史问题，而是正在重塑CPU架构设计、操作系统内核、语言运行时的持续演进过程。**
+
+---
+
+### 【Slide N+1: WHAT】—— 洞见了什么？
+
+**洞见1：攻击表面是"瞬态执行"，但本质是"微架构状态残留"**
+
+所有攻击的共同模式：
+```
+推测路径执行指令 → 修改微架构状态（缓存/预测器/缓冲区）
+                    ↓
+          架构效果被丢弃，但微架构痕迹保留
+                    ↓
+       攻击者通过侧信道（时间测量）观测痕迹，推断秘密数据
+```
+
+**洞见2：19种攻击映射到3类根本原因**
+
+| 根本原因 | 代表攻击 | 利用的微架构结构 |
+|----------|----------|-----------------|
+| 推测绕过权限检查 | Meltdown, Spectre v1/v3a, L1TF | 页表/段检查延迟 |
+| 预测器污染 | Spectre v2, BHI, Retbleed, Inception | BTB/BHB/RSB |
+| 缓冲区陈旧数据采样 | MDS, TAA, SRBDS, GDS, RFDS | Fill Buffer/Load Port/Store Buffer |
+
+**洞见3：防御是全栈系统工程，任何单层不足**
+
+```
+硬件免疫 (硅片)     ← 根本解决，但换代周期5-10年
+  ↓ 未覆盖
+微码更新           ← 快速响应，但旧硬件不被支持
+  ↓ 未覆盖
+内核缓解           ← 覆盖最广，但性能代价最大
+  ↓ 未覆盖
+编译器强化         ← 针对性保护，需开发者配合
+  ↓ 未覆盖
+浏览器/运行时隔离   ← 终端防线，保护Web/脚本场景
+```
+
+**洞见4：三大厂商的防御路线图差异显著**
+
+- **Intel**：漏洞最多的攻击面 → 最激进的全栈防御 → 从Skylake打补丁到Granite Rapids硬件免疫
+- **AMD**：得益于不同的推测控制架构 → 受少数漏洞影响（Zenbleed/Inception）→ 快速通过AGESA固件修复
+- **ARM**：架构设计先发优势 → CSV2/BTI/PAC原生防御 → 但嵌入式/IoT生态碎片化带来治理挑战
+
+---
+
+### 【Slide N+2: WHEN】—— 关键时间线
+
+```
+2017  KAISER论文发表（KPTI前身）
+  │
+2018.01  Spectre (v1/v2) + Meltdown 公开披露 ← ★ 引爆点
+2018.05  Intel发布IBRS/STIBP/IBPB白皮书
+2018.07  Chrome 67默认启用站点隔离
+2018.08  L1TF/Foreshadow 披露
+2018.10  LLVM Speculative Load Hardening方案发布
+  │
+2019.05  MDS系列 (RIDL/Fallout/ZombieLoad) 披露
+2019.08  Canella等发表瞬态执行攻击系统性综述
+2019.11  TAA (TSX异步中止) 披露
+2019      Intel Cascade Lake首次实现eIBRS + MDS/L1TF硬件修复
+  │
+2020.03  LVI (加载值注入) 披露，影响SGX
+2020.06  SRBDS (特殊寄存器采样) 披露
+2020      Linux Core Scheduling特性合入主线
+  │
+2021      Firefox首次默认启用Project Fission站点隔离
+  │
+2022.03  BHI (分支历史注入) 披露，eIBRS被绕
+2022.07  Retbleed 披露，Intel/AMD返回指令再受影响
+2022      Intel推出BHI_DIS_S硬件缓解（Alder Lake+）
+2022      ARM宣布CSV2_3 (Cortex-X3) 最全面硬件隔离
+  │
+2023.07  Zenbleed 披露 (AMD Zen 2)
+2023.08  GDS/Downfall 披露
+2023.08  Inception 披露 (AMD Zen 3/4)
+  │
+2024.03  Native BHI (CVE-2024-2201) 无需eBPF
+2024.10  ITS (Indirect Target Selection) 披露
+2024.12  IBPD (Indirect Branch Predictor Delayed Updates) 披露
+2024      Intel Granite Rapids发布IPRED/DDP硬件级防御
+  │
+2025-26  持续有新的瞬态执行变体研究发表
+```
+
+---
+
+### 【Slide N+3: WHO】—— 关键角色图谱
+
+```
+     ┌─────────────────────────────────────────────────┐
+     │                   攻击发现者                      │
+     ├─────────────────────────────────────────────────┤
+     │ Google Project Zero    │ Spectre, Meltdown,     │
+     │                        │ Zenbleed               │
+     │ ETH Zurich (ComSec)    │ Retbleed, Zenbleed     │
+     │ VUSec (VU Amsterdam)   │ LVI, MDS系列           │
+     │ TU Graz                │ Meltdown, KAISER       │
+     │ UC San Diego           │ GDS/Downfall           │
+     │ imec-DistriNet (KU Leuven) │ LVI, SGAxe         │
+     └─────────────────────────────────────────────────┘
+
+     ┌─────────────────────────────────────────────────┐
+     │                   硬件防御方                      │
+     ├─────────────────────────────────────────────────┤
+     │ Intel    │ 30+微码更新，eIBRS/IPRED/BHI_DIS_S   │
+     │ AMD      │ AGESA固件，PSFD，Inception缓解       │
+     │ ARM      │ CSV2原语，SB指令，BTI，PAC            │
+     │ RISC-V   │ 开放硬件验证，设计阶段纳管推测安全     │
+     └─────────────────────────────────────────────────┘
+
+     ┌─────────────────────────────────────────────────┐
+     │                   软件防御方                      │
+     ├─────────────────────────────────────────────────┤
+     │ Linux内核    │ KPTI/Retpoline/VERW/Core Sched    │
+     │ GCC/Clang    │ SLH/Retpoline推测屏障编译器支持    │
+     │ KVM          │ VM边界清除+推测控制传递            │
+     │ Xen/VMware/Hyper-V │ Hypervisor级防御             │
+     │ Chrome V8    │ 站点隔离+JIT索引掩码              │
+     │ Firefox      │ Project Fission站点隔离           │
+     │ OpenSSL/BoringSSL │ 常量时间+推测屏障            │
+     └─────────────────────────────────────────────────┘
+```
+
+### 【Slide N+4: WHERE】—— 防御技术应用到哪里？
+
+| 应用场景 | 核心威胁 | 关键防御技术 | 防护成熟度 |
+|----------|----------|-------------|-----------|
+| **公有云 IaaS** (AWS EC2/Azure VM) | Guest→Host跨VM窃取 | KVM: L1D Flush + VERW + Core Scheduling | ★★★★ 高 |
+| **私有数据中心** | 旧硬件累积性能损失 | 硬件换代评估；SMT禁用 vs Core Sched选择 | ★★★ 中-高 |
+| **容器化平台** (Kubernetes/Docker) | 容器共享宿主机内核 | 继承宿主机KPTI/VERW；gVisor沙箱额外隔离 | ★★★ 中 |
+| **Web浏览器** | JS→跨站/同进程数据窃取 | 站点隔离 + 定时器降级 + JIT推测屏障 | ★★★★ 高 |
+| **移动端** (Android/iOS) | ARM旧型号未修复 | 依赖SoC厂商/Treble更新；应用层prctl | ★★ 中-低 |
+| **IoT/嵌入式** | 老旧ARM内核无更新 | 几乎无有效防御；硬件隔离依赖少量新芯片 | ★ 低 |
+| **机密计算** (Intel SGX/AMD SEV) | SGX飞地被推测攻击 | LLVM LVI缓解；SEV硬件隔离天然防御 | ★★★ 中 |
+| **金融/密码学系统** | 密钥泄漏 | 常量时间算法 + 推测屏障 + prctl禁用推测 | ★★★★ 高 |
+| **5G/边缘计算** | 多租户共享加速器 | GPU/NPU推测行为研究不充分 | ★★ 低 |
+
+---
+
+## 四、总结与建议页
+
+### 洞察方向回顾
+
+自2018年Spectre/Meltdown以来，瞬态执行漏洞已成为评估计算平台安全性的基础维度之一。这不仅是一场"漏洞发现→打补丁"的攻防循环，而是**催生了涵盖硬件设计、微架构规范、内核架构、编译器和语言运行时的全栈安全工程范式转变**。
+
+### 价值识别
+
+| 价值点 | 说明 |
+|--------|------|
+| **硬件换代决策依据** | 明确旧硬件(Skylake-)性能损失30-60% vs 新硬件(Granite Rapids/AMD Zen 5) <5% 的量化差距 |
+| **安全架构选型参考** | ARM CSV2架构原语的设计前瞻性 vs x86打补丁模式的设计哲学对比 |
+| **云厂商合规基线** | 所有主流云厂商已要求已修补硬件，成为基础设施准入门槛 |
+| **纵深防御策略** | 单层防护（如仅KPTI）不足以应对全谱系攻击，需全栈协同 |
+| **供应链安全** | AGESA固件更新、Linux内核版本、容器运行时均影响防御完备性 |
+
+### 关键趋势
+
+1. **硬件安全从"修复"走向"免疫"**：Intel IPRED、ARM CSV2_3、AMD Zen 4+代表推测隔离的硅片级硬化
+2. **攻击发现从"一次性重大突破"转向"持续长尾"**：ITS、IBPD等2024年新变体证明新的微架构结构仍在成为攻击面
+3. **RISC-V作为"安全重置"机会**：开放架构可以在设计阶段纳管推测安全，避免重蹈x86覆辙
+4. **AI/ML加速器成为新攻击面**：GPU/NPU推测执行的侧信道研究仍处于早期阶段
+5. **"安全性能"成为处理器关键指标**：Phoronix等基准测试已将安全缓解性能影响纳入CPU评测常态
+
+### 技术识别
+
+```
+              新一代硬件 (2024+)
+              ┌─────────────────────┐
+              │  IPRED  │  CSV2_3   │
+              │  DDP    │  BTI/PAC  │
+              │  FSFP   │  Zen 5    │
+              └────┬───┬──────┬───┬─┘
+                   │   │      │   │
+     ┌─────────────┼───┼──────┼───┼─────────────┐
+     │  内核层      │   │      │   │             │
+     │  KPTI/IBRS  │   │      │   │             │
+     │  VERW/IBPB  │   │      │   │             │
+     │  Core Sched │   │      │   │             │
+     ├─────────────┤   │      │   ├─────────────┤
+     │  编译器层    │   │      │   │  虚拟化层    │
+     │  Retpoline  │   │      │   │  L1D Flush  │
+     │  SLH/LFENCE │   │      │   │  VERW(VM)   │
+     ├─────────────┤   │      │   ├─────────────┤
+     │  浏览器层    │   │      │   │  密码学层    │
+     │  站点隔离    │   │      │   │  常量时间    │
+     │  JIT掩码    │   │      │   │  推测屏障    │
+     └─────────────┘   │      │   └─────────────┘
+                ┌──────┘      └──────┐
+                │   IoT/嵌入式缺口    │
+                │  （独立议题）       │
+                └────────────────────┘
+```
+
+### 重要玩家
+
+| 层级 | 关键组织 | 不可替代性 |
+|------|---------|-----------|
+| 硬件 | Intel / AMD / ARM / RISC-V国际 | 硅片级修复只能在设计阶段实现 |
+| 发现 | Google P0 / ETH ComSec / VUSec / TU Graz | 独立安全研究驱动产业响应 |
+| OS | Linux内核社区 / Microsoft / Apple | 操作系统是防御最后一道通用防线 |
+| 云 | AWS / Azure / GCP | 推动硬件更新换代的核心商业力量 |
+| 浏览器 | Google Chrome / Mozilla / Apple WebKit | 终端用户最大攻击面的防线 |
+| 编译器 | GCC / LLVM / MSVC | 推测屏障从编译期嵌入，降低开发者负担 |
+| 标准 | MITRE / NIST / ISO | CWE-1427等推动统一的瞬态执行安全标准 |
+
+### 行动建议
+
+1. **立即**：通过 `/sys/devices/system/cpu/vulnerabilities/` 评估当前部署环境风险状态
+2. **短期（1年内）**：规划Skylake及更早硬件的替换；启用Core Scheduling（如使用SMT）；为敏感进程配置 `prctl()` 推测控制
+3. **中期（2-3年）**：采购需求中纳入推测安全评估（IA32_ARCH_CAPABILITIES / CSV2 / ARM SB等）；容器化敏感应用使用gVisor等强隔离运行时
+4. **长期（3-5年）**：关注RISC-V + CHERI等从设计阶段消除推测侧信道的下一代架构；推动组织建立瞬态执行安全基线（类似Common Criteria级别）
+
+---
+
+> **核心结论**：
+>
+> 微架构瞬态执行攻击不是单个可以被"修复"的漏洞，而是**现代推测执行处理器与生俱来的结构性矛盾**。全栈防御（硅片→微码→内核→编译器→运行时→浏览器）是当前唯一的工程答案，且这一防御栈仍在持续演进。**新硬件(2024+)已将性能损失控制在5%以内，显著改变了安全部署的经济账。** 真正的根本解决，需要从处理器设计的规格层面将"推测隔离"纳入第一性原理。
+
+---
+> *本文档基于截至2026年5月的公开信息编制。建议定期复查各厂商安全公告获取最新态势。*
