@@ -317,7 +317,7 @@ Granite Rapids (2024) ─── IPRED + DDP → 新生代硬件免疫
 | 固件机制 | 微码 + ucode包 | AGESA BIOS固件更新 | AMD更依赖OEM/主板商推送 |
 
 **AMD关键安全事件：**
-- **Zenbleed (2023)**：Zen 2独有——VZEROUPPER优化 + 寄存器重命名竞争 → 跨线程寄存器泄漏 → AGESA ComboAM4v2 PI 1.2.0.A修复
+- **Zenbleed (2023)**：Zen 2独有——VZEROUPPER优化 + 寄存器重命名竞争 → 跨线程寄存器泄漏 → AGESA ComboAM4v2 PI 1.2.0.C修复
 - **Inception (2023)**：Zen 3/4——返回预测器中毒 → 增强IBPB/RSB刷新 → AGESA ComboAM4v2 PI 1.2.0.B修复
 - **PSFD**：Zen 3+特性——Predictive Store Forwarding Disable (MSR 0x48 Bit 3)，防止推测存储转发侧信道
 
