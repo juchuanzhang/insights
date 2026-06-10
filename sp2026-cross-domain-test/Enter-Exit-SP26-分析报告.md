@@ -476,3 +476,136 @@ d = array2[c];     // 缓存暴露点
 | RSRR | 系统寄存器特权读取 | Rogue System Register Read |
 | UMIP | 用户模式指令预防 | User Mode Instruction Prevention |
 | KPTI | 内核页表隔离 | Kernel Page Table Isolation |
+
+---
+
+## 十、FAQ（答疑记录）
+
+### Q1：为什么作者不做跨TEE-REE的测试？
+
+**问**：为什么作者不测试Intel TDX和AMD SEV-SNP这种CVM（Confidential VM）边界？
+
+**答**：基于论文内容分析，不测TDX/SEV-SNP的原因主要有以下几点：
+
+**1. Actor模式不支持**
+
+论文脚注明确：当前仅支持 **host-kernel、host-user、guest-kernel** 三种组合。而TDX引入了全新的**SEAM模式**（SEAM-VMX non-root和SEAM-VMX root），这是现有框架完全没有覆盖的CPU特权级。
+
+**2. 信任模型完全相反**
+
+- 论文的V2V模板：hypervisor是**可信的**，它管理VM切换并收集测量——测试的是VM之间的泄漏
+- TDX/SEV-SNP：hypervisor是**不可信的**，VM要隔离**FROM** hypervisor——这意味着需要完全不同的模板设计（攻击者是hypervisor，受害者是CVM）
+
+**3. 执行器缺少关键基础设施**
+
+- TDX需要TDX模块运行在SEAM模式、SEAM相关VMCS配置、TDCALL/TDXVMCALL指令处理——当前executor仅支持标准VMX/SVM
+- SEV-SNP需要RMP表管理、SEV-SNP特定VMCB配置、RMPADJUST/PVALIDATE等指令的完整域转换序列——当前executor无此能力
+
+**4. 硬件可用性问题**
+
+论文测试时间为2024年，TDX当时仅在少数云平台试点部署（需BIOS启用、特定CPU微码），SEV-SNP虽在Zen3+支持但CVM完整设置流程复杂。6台测试CPU中仅AMD3(Zen4)理论上可运行SEV-SNP，但无TDX硬件。
+
+**5. REG配置中已触及但未深入**
+
+附录A.2的SEC类指令已包含SEV-SNP相关指令（PSMASH、PVALIDATE、RMPADJUST、RMPUPDATE），但这些仅作为**特权寄存器读取**（RSRR）场景的一部分——即测试用户态推测执行这些指令会泄漏什么，而非测试CVM→hypervisor的完整域转换泄漏。
+
+**6. 内存别名机制的局限**
+
+论文的内存别名功能让所有VM共享相同虚拟地址布局，模拟Foreshadow-VM条件。但SEV-SNP的RMP表硬件级阻止了hypervisor访问CVM内存，TDX的EPT权限限制也不同——需要全新的别名策略。
+
+**总结**：不是"不想测"，而是测TDX/SEV-SNP需要**新增Actor模式、逆向信任模型模板、CVM执行器基础设施、CVM硬件平台**——这是一个工作量与论文本身相当的独立研究方向。
+
+---
+
+### Q2：缓解措施也需要特定序列（如VERW、L1D flush），怎么理解？
+
+**问**：论文说"缓解措施也需要特定指令序列"，具体怎么理解？
+
+**答**：很多微架构隔离缓解措施本身是**特定指令序列**，必须在域转换的**特定位置**执行才能生效，而不是一个"开关"一劳永逸。
+
+**1. 缓解措施是指令序列，不是配置位**
+
+- **VERW**：执行`VERW qword ptr [r14]`指令，刷新微架构store buffer（缓解MDS）。不是设置某个CPU配置位，而是**每次域转换前必须实际执行这条指令**
+- **L1D flush**：执行`L1D_FLUSH_CMD` MSR写入指令，刷空L1数据缓存（缓解Foreshadow）。同样需要每次手动触发
+- **DSS补丁**：Linux在切换到用户态前执行`DIV 1, 1`（一次假除法运算），刷新除法器状态。这是一条**插入在syscall退出路径中的指令**
+- **KPTI**：需要在切换到用户态前**修改页表项**（一系列内存写操作），切换回来后再恢复
+
+**2. 为什么模板需要包含它们**
+
+测试的目标是验证"这个缓解措施是否真的有效"。因此模板中需要：
+
+```asm
+.section .main
+.start:
+  .macro.random_instructions.64:   ; 受害者随机代码
+  VERW qword ptr [r14]             ; ← 缓解措施：在域转换前刷store buffer
+  .macro.switch_h2g:               ; ← 域转换：切换到攻击者
+.end:
+```
+
+如果模板中**没有VERW**，测到的泄漏可能是"没有缓解时的泄漏"——但真正关心的是**"加了缓解后还漏不漏"**。
+
+**3. 缓解序列的位置很关键**
+
+缓解措施必须在**域转换的紧前方**执行才有意义——VERW刷完store buffer后立刻切换到攻击者Actor，攻击者才无法从buffer中读到受害者数据。如果VERW和域转换之间插入大量随机指令，buffer可能又被填充，缓解就失效了。
+
+这就是为什么模板设计是**结构化的**：固定序列（缓解+域转换）必须保持顺序，随机代码只能在固定序列之外的"空位"中填充。
+
+**4. 同一缓解在不同场景下的实例化不同**
+
+同一缓解措施在不同场景下的具体实现可能不同——比如测试"VERW能否阻止VM→VM的MDS泄漏"时，VERW放在Host Actor中、在VM enter之前；而测试"VERW能否阻止Kernel→User的MDS泄漏"时，VERW放在Kernel Actor中、在sysret之前。模板机制允许**用同一个模板框架描述不同场景**，通过宏配置灵活插入缓解序列。
+
+---
+
+### Q3：论文测了哪些防护措施？
+
+**问**：论文具体测试了哪些微架构隔离防护措施？
+
+**答**：论文测试的防护措施分为两类：**微架构隔离补丁**（§8.2.3）和**工具自身的防噪声/防干扰措施**。
+
+**一、微架构隔离补丁（核心测试内容）**
+
+MDS补丁：
+
+| 补丁 | 测试结果 | 说明 |
+|---|---|---|
+| **VERW指令** | ✓ 有效 | Intel推荐，每次域转换前刷store buffer |
+| **L1D_FLUSH_CMD** | ✓ 有效 | Intel推荐，刷L1数据缓存 |
+| **WBINVD** | ✗ 无效 | 非Intel推荐，功能类似缓存刷新但无法阻止MDS泄漏 |
+
+Foreshadow补丁：
+
+| 补丁 | 测试结果 |
+|---|---|
+| **L1D_FLUSH_CMD** | ✓ 有效 |
+| **WBINVD** | ✗ 无效 |
+
+DSS补丁（除法器状态采样）：
+
+| 补丁 | 测试结果 | 说明 |
+|---|---|---|
+| **当前Linux补丁（1÷1除法）** | ✓ 有效 | 在sysret前执行假除法，刷新除法器状态 |
+| **旧补丁（异常处理器中的除法）** | ✗ **无效** | 将除法放在#DE异常处理器而非系统进入例程中——**差点合入主线内核！**仅经安全社区审查后才被替换 |
+
+Meltdown补丁（KPTI）：
+
+| KPTI变体 | 测试结果 | 说明 |
+|---|---|---|
+| **清除Present位** | ✗ **无效** | 仅标记内核页为无效，仍可Meltdown读取 |
+| **完全unmapping（零化PTE）** | ✓ 阻止Meltdown | 但仍检测到user→kernel访问触发MDS的违规 |
+| **unmapping + VERW** | ✓ **有效** | 完全unmapping配合VERW才能同时阻止Meltdown和MDS |
+
+**二、工具自身的防噪声/防干扰措施**
+
+| 控制措施 | 说明 |
+|---|---|
+| **禁用中断** | executor执行期间禁用核心所有中断，防止意外VMEXIT/上下文切换 |
+| **刷缓存和缓冲区** | 每次测量前刷新caches和buffers，确保干净的微架构起始状态 |
+| **保存/恢复host状态** | 实验前后保存恢复CR0、EFER、VMX控制寄存器等，防止host OS崩溃 |
+| **禁用预取器** | 配置文件中`enable_prefetchers: false`，通过MSR禁用CPU预取器减少噪声 |
+| **LFENCE防直行推测** | 宏跳转后插入LFENCE，防止straight-line speculation干扰宏实现 |
+| **保留寄存器子集** | 测量代码预留部分寄存器避免额外内存访问，最小化对微架构状态的干扰 |
+
+**三、汇总**
+
+论文共测试了**7种防护补丁变体**（VERW、L1D_FLUSH_CMD、WBINVD×2、DSS当前补丁、DSS旧补丁、KPTI×3），其中发现**3种无效**（WBINVD×2、DSS旧补丁、KPTI-清除Present位），这恰好证明了论文核心论点——**没有自动化验证，你无法确认补丁真的有效**。
