@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Enter, Exit, Page Fault, Leak — 论文分析报告讲解</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;font-family:'Segoe UI','Microsoft YaHei',sans-serif;background:#0a0a0a}
+:root{
+  --accent:#00e5ff;
+  --accent2:#7c4dff;
+  --accent3:#ff5252;
+  --accent4:#69f0ae;
+  --bg1:#0d1117;
+  --bg2:#161b22;
+  --text:#e6edf3;
+  --text2:#8b949e;
+  --code-bg:#1c2333;
+}
+.slide{
+  position:absolute;top:0;left:0;width:100%;height:100%;
+  display:none;flex-direction:column;justify-content:center;align-items:center;
+  padding:60px 80px;color:var(--text);
+  background:linear-gradient(135deg,var(--bg1) 0%,var(--bg2) 100%);
+}
+.slide.active{display:flex}
+.slide h1{font-size:2.4em;margin-bottom:20px;text-align:center;line-height:1.3}
+.slide h2{font-size:1.8em;margin-bottom:16px;text-align:center;color:var(--accent)}
+.slide h3{font-size:1.3em;margin-bottom:12px;color:var(--accent2)}
+.slide p,.slide li{font-size:1.1em;line-height:1.6;color:var(--text)}
+.slide ul,.slide ol{margin:12px 0 12px 20px;text-align:left;width:100%}
+.slide li{margin-bottom:6px}
+.slide .subtitle{font-size:1.2em;color:var(--text2);text-align:center;margin-bottom:24px}
+.slide .highlight{color:var(--accent);font-weight:700}
+.slide .warn{color:var(--accent3);font-weight:700}
+.slide .good{color:var(--accent4);font-weight:700}
+.slide .card{
+  background:var(--code-bg);border-radius:12px;padding:20px 28px;
+  margin:12px 0;width:100%;max-width:900px;
+  border:1px solid rgba(0,229,255,.15);
+}
+.slide .card-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;width:100%;max-width:1000px}
+.slide .card-grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;width:100%;max-width:1100px}
+.slide .card-sm{background:var(--code-bg);border-radius:8px;padding:14px 18px;border:1px solid rgba(0,229,255,.12)}
+.slide table{width:100%;border-collapse:collapse;margin:10px 0;font-size:.95em}
+.slide th{background:rgba(0,229,255,.15);color:var(--accent);padding:8px 12px;text-align:left;border-bottom:2px solid rgba(0,229,255,.3)}
+.slide td{padding:6px 12px;border-bottom:1px solid rgba(139,148,158,.2);color:var(--text)}
+.slide code,.slide pre{background:var(--code-bg);padding:4px 8px;border-radius:4px;font-family:'Consolas','Courier New',monospace;font-size:.9em;color:var(--accent4)}
+.slide pre{padding:12px 16px;margin:10px 0;white-space:pre-wrap;width:100%;max-width:900px}
+.slide .flow{display:flex;align-items:center;justify-content:center;gap:8px;margin:16px 0;font-size:1em}
+.slide .flow-step{background:var(--code-bg);padding:8px 14px;border-radius:8px;border:1px solid rgba(0,229,255,.2);text-align:center;font-size:.95em}
+.slide .flow-arrow{color:var(--accent);font-size:1.2em}
+.slide .num-big{font-size:3em;color:var(--accent);font-weight:900;text-align:center;margin:8px 0}
+.slide .num-label{font-size:.9em;color:var(--text2);text-align:center}
+.slide .center-text{text-align:center;width:100%}
+.slide .two-col{display:flex;gap:32px;width:100%;max-width:1100px}
+.slide .two-col>div{flex:1}
+.slide .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.8em;font-weight:700;margin:0 4px}
+.slide .badge-good{background:rgba(105,240,174,.15);color:var(--accent4)}
+.slide .badge-bad{background:rgba(255,82,82,.15);color:var(--accent3)}
+.slide .badge-info{background:rgba(0,229,255,.15);color:var(--accent)}
+.slide .badge-new{background:rgba(124,77,255,.15);color:var(--accent2)}
+
+.title-slide h1{font-size:2.8em;color:var(--accent)}
+.title-slide .meta{font-size:1em;color:var(--text2);text-align:center;margin-top:16px;line-height:1.8}
+
+.nav{
+  position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+  display:flex;gap:8px;z-index:100;
+}
+.nav button{
+  background:rgba(0,229,255,.15);border:1px solid rgba(0,229,255,.3);
+  color:var(--accent);padding:8px 20px;border-radius:8px;cursor:pointer;font-size:.95em;
+  transition:all .2s;
+}
+.nav button:hover{background:rgba(0,229,255,.3)}
+.slide-num{position:fixed;bottom:20px;right:30px;color:var(--text2);font-size:.85em;z-index:100}
+
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--accent);z-index:100;transition:width .3s}
+
+@media(max-width:768px){
+  .slide{padding:30px 24px}
+  .slide h1{font-size:1.6em}
+  .slide h2{font-size:1.3em}
+  .slide p,.slide li{font-size:.95em}
+  .slide .card-grid{grid-template-columns:1fr}
+  .slide .card-grid3{grid-template-columns:1fr}
+  .slide .two-col{flex-direction:column;gap:16px}
+}
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+
+<!-- Slide 1: Title -->
+<div class="slide title-slide active" id="s1">
+<h1>Enter, Exit, Page Fault, Leak<br>微架构隔离边界测试</h1>
+<div class="subtitle">论文分析报告讲解</div>
+<div class="meta">
+Oleksenko · Solt · Fournet · Hofmann · Köpf · Volos<br>
+Azure Research / ETH Zurich / MPI-SP / Microsoft<br><br>
+<span class="badge badge-new">4个新CVE</span>
+<span class="badge badge-info">6款CPU</span>
+<span class="badge badge-info">88机器天</span>
+<span class="badge badge-info">200亿测量</span>
+</div>
+</div>
+
+<!-- Slide 2: Problem -->
+<div class="slide" id="s2">
+<h2>核心问题</h2>
+<div class="card">
+<p>CPU提供<span class="highlight">架构级隔离</span>（虚拟化、特权级、页表），但<span class="warn">忽略了微架构侧信道</span>：</p>
+<ul>
+<li>共享缓存、CPU缓冲区 → Meltdown、Foreshadow、MDS等攻击</li>
+<li>架构隔离 ≠ 微架构隔离——逻辑隔离无法阻止硬件级信息泄漏</li>
+</ul>
+</div>
+<div class="card">
+<p>微架构防御部署<span class="warn">碎片化</span>：</p>
+<ul>
+<li>硬件/固件层：部分由CPU补丁缓解</li>
+<li>OS/hypervisor层：部分由软件缓解（缓冲区刷新、KPTI）</li>
+<li>未修补：安全影响低、缓解成本高 → 被忽略</li>
+</ul>
+</div>
+</div>
+
+<!-- Slide 3: Current failures -->
+<div class="slide" id="s3">
+<h2>补丁屡次失败</h2>
+<div class="card-grid">
+<div class="card-sm">
+<h3 style="color:var(--accent3)">已知失败案例</h3>
+<ul>
+<li>Enhanced IBRS → <span class="badge badge-bad">BHI绕过</span></li>
+<li>Automatic IBRS → <span class="badge badge-bad">Inception绕过</span></li>
+<li>FineIBT → <span class="badge badge-bad">InSpectre Gadget绕过</span></li>
+<li>retpoline → <span class="badge badge-bad">RETBLEED绕过</span></li>
+<li>LFENCE/JMP → <span class="badge badge-bad">仍可被竞争</span></li>
+<li>VERW缓冲区覆写 → <span class="badge badge-bad">CacheOut绕过</span></li>
+</ul>
+</div>
+<div class="card-sm">
+<h3 style="var(--accent2)">验证手段不足</h3>
+<ul>
+<li>依赖PoC攻击测试 → 覆盖面有限</li>
+<li>依赖纯理论推理 → 易出错、劳动密集</li>
+<li>厂商安全声明屡被推翻</li>
+<li><span class="highlight">没有自动化、系统性的跨域验证工具</span></li>
+</ul>
+</div>
+</div>
+</div>
+
+<!-- Slide 4: Existing tools limitations -->
+<div class="slide" id="s4">
+<h2>现有工具的局限</h2>
+<table>
+<tr><th>工具</th><th>域范围</th><th>漏洞类型</th><th>能否发现新类型</th><th>能否跨域</th></tr>
+<tr><td><span class="highlight">本文工具</span></td><td>多域(VM/User/Kernel)</td><td>通用</td><td><span class="badge badge-good">✓</span></td><td><span class="badge badge-good">✓</span></td></tr>
+<tr><td>Revizor</td><td>单域(内核)</td><td>通用</td><td><span class="badge badge-good">✓</span></td><td><span class="badge badge-bad">✗</span></td></tr>
+<tr><td>Scam-V</td><td>单域(TrustZone)</td><td>通用</td><td><span class="badge badge-good">✓</span></td><td><span class="badge badge-bad">✗</span></td></tr>
+<tr><td>SpeechMiner</td><td>单域</td><td>Meltdown类定量</td><td><span class="badge badge-bad">✗</span></td><td><span class="badge badge-bad">✗</span></td></tr>
+<tr><td>Transynther</td><td>双线程</td><td>Meltdown/MDS变体</td><td><span class="badge badge-bad">✗</span></td><td><span class="badge badge-bad">✗</span></td></tr>
+<tr><td>RegCheck</td><td>单域</td><td>Meltdown-3a专用</td><td><span class="badge badge-bad">✗</span></td><td><span class="badge badge-bad">✗</span></td></tr>
+</table>
+<div class="center-text" style="margin-top:20px">
+<p><span class="warn">核心差距：没有任何工具能系统性、自动化地测试跨域微架构隔离</span></p>
+</div>
+</div>
+
+<!-- Slide 5: Actor abstraction -->
+<div class="slide" id="s5">
+<h2>核心方法论：Actor抽象</h2>
+<div class="card">
+<p>引入 <span class="highlight">Actor</span> 作为安全域的统一抽象：</p>
+<pre>Actor = 代码 + 私有数据 + 特权级 + CPU模式 + 内存权限</pre>
+<ul>
+<li>Actor = 进程 / VM / 内核 / 任何隔离执行上下文</li>
+<li>Actor之间通过预定义指令序列（syscall、VM enter）进行<span class="highlight">域转换</span></li>
+<li>每个test case = 1个main Actor(内核host) + 1~N个其他模式Actor</li>
+</ul>
+</div>
+<div class="card">
+<p>测试目标：域转换时，<span class="warn">受害者Actor的数据不应泄漏到攻击者Actor</span></p>
+<div class="flow">
+<div class="flow-step">受害者<br>(e.g. Hypervisor)</div>
+<div class="flow-arrow">→ 域转换 →</div>
+<div class="flow-step">攻击者<br>(e.g. VM)</div>
+<div class="flow-arrow">→ 测量 →</div>
+<div class="flow-step">硬件轨迹<br>(缓存/时序)</div>
+</div>
+</div>
+</div>
+
+<!-- Slide 6: MRT workflow -->
+<div class="slide" id="s6">
+<h2>MRT工作流程</h2>
+<div class="flow" style="flex-wrap:wrap;justify-content:center;gap:12px">
+<div class="flow-step" style="min-width:120px"><span class="highlight">1. 程序生成</span><br>随机汇编指令<br>(模板+配置约束)</div>
+<div class="flow-arrow">→</div>
+<div class="flow-step" style="min-width:120px"><span class="highlight">2. 输入生成</span><br>随机二进制数据<br>初始化内存/寄存器</div>
+<div class="flow-arrow">→</div>
+<div class="flow-step" style="min-width:120px"><span class="highlight">3. 硬件执行</span><br>目标CPU执行<br>收集硬件轨迹</div>
+<div class="flow-arrow">→</div>
+<div class="flow-step" style="min-width:120px"><span class="highlight">4. 模型执行</span><br>Unicorn模拟器<br>收集合同轨迹</div>
+<div class="flow-arrow">→</div>
+<div class="flow-step" style="min-width:120px"><span class="highlight">5. 泄漏比较</span><br>检查非干扰性质<br>报告未知泄漏</div>
+</div>
+<div class="card" style="margin-top:20px">
+<p><span class="highlight">关键洞察</span>：MRT不直接比较硬件轨迹与模型预测，而是<span class="highlight">比较暴露的信息</span>——即使模型很简单，也能有效过滤已知泄漏并检测未知泄漏。</p>
+</div>
+</div>
+
+<!-- Slide 7: Template + Macro -->
+<div class="slide" id="s7">
+<h2>技术架构：模板 + 宏</h2>
+<div class="card">
+<p><span class="highlight">模板</span>：汇编文件，定义Actor结构和域转换边界</p>
+<p><span class="highlight">宏</span>：伪指令（汇编中为NOP），在不同阶段实例化：</p>
+<ul>
+<li>Executor中 → <span class="badge badge-info">二进制补丁</span>：NOP替换为跳转到宏实现（VMRESUME/VMRUN、Prime/Flush等）</li>
+<li>Model中 → <span class="badge badge-info">动态回调</span>：Unicorn中拦截NOP地址，调用模拟实现</li>
+</ul>
+</div>
+<pre>.section .main
+.start:
+  .macro.random_instructions.64:   <span class="highlight">; 随机指令区</span>
+  VERW qword ptr [r14]             <span class="highlight">; 缓解措施</span>
+  .macro.switch_h2g:               <span class="highlight">; 域转换宏</span>
+.macro.fault_handler:              <span class="highlight">; 异常处理</span>
+
+.section .guest
+.vm_start:
+  .macro.measurement_start:        <span class="highlight">; 开始测量</span>
+  .macro.random_instructions.64:   <span class="highlight">; 攻击者随机代码</span>
+  .macro.measurement_end:          <span class="highlight">; 结束测量</span>
+  .macro.switch_g2h:</pre>
+</div>
+
+<!-- Slide 8: Execution Environment -->
+<div class="slide" id="s8">
+<h2>执行环境：3500+行定制内核模块</h2>
+<div class="card-grid">
+<div class="card-sm">
+<h3>为什么不用Linux现有基础设施？</h3>
+<ul>
+<li>Linux VM管理面向完整VM → 开销过大</li>
+<li>Linux有大量安全/稳定性防护 → 阻止自由配置</li>
+<li>因此<span class="highlight">从零实现</span>定制内核模块</li>
+</ul>
+</div>
+<div class="card-sm">
+<h3>关键设计</h3>
+<ul>
+<li><span class="badge badge-info">状态保存恢复</span> 保存/恢复CR0、EFER、VMX寄存器</li>
+<li><span class="badge badge-info">故障隔离</span> 捕获所有异常→自定义处理器</li>
+<li><span class="badge badge-info">CPU配置</span> 通过MSR控制预取器等特性</li>
+<li><span class="badge badge-info">VM创建</span> 毫秒级创建VMCS/VMCB+EPT/NPT</li>
+<li><span class="badge badge-info">内存别名</span> 相同虚拟地址布局模拟Foreshadow</li>
+</ul>
+</div>
+</div>
+</div>
+
+<!-- Slide 9: Leakage Modeling -->
+<div class="slide" id="s9">
+<h2>泄漏建模：合同式非干扰</h2>
+<div class="card">
+<p><span class="warn">经典非干扰</span>（太强）：受害者数据σ^V不应影响攻击者测量</p>
+<p>σ^1_A = σ^2_A ⇒ Measure(p, σ^1, μ) = Measure(p, σ^2, μ)</p>
+</div>
+<div class="card">
+<p><span class="highlight">合同式非干扰</span>（实用化）：允许基本泄漏，仅禁止超出预期的泄漏</p>
+<p>σ^1_A = σ^2_A ∧ <span class="highlight">Contract(p, σ^V_1) = Contract(p, σ^V_2)</span> ⇒ Measure(p, σ^1, μ) = Measure(p, σ^2, μ)</p>
+<ul>
+<li>合同轨迹 = 模型预测的预期泄漏（受害者load/store地址 + 控制流变化）</li>
+<li>实际OS允许基本泄漏（如sysret后不刷缓存），但不允许MDS类深层泄漏</li>
+<li><span class="warn">隔离仅在泄漏超出预期时才被违反</span></li>
+</ul>
+</div>
+</div>
+
+<!-- Slide 10: Nondeterminism -->
+<div class="slide" id="s10">
+<h2>非确定性处理：χ²检验 + 自适应样本量</h2>
+<div class="card">
+<p><span class="warn">问题</span>：域转换触发不透明微码，引入噪声 → 假阳性频发</p>
+</div>
+<div class="card">
+<p><span class="highlight">解决方案</span>：将轨迹相等比较提升为<span class="highlight">分布相等比较</span></p>
+<ul>
+<li>硬件轨迹视为类别数据 → Pearson χ²检验</li>
+<li>两条轨迹"相同" iff 它们来自同一分布</li>
+<li>自适应样本量：N=15 → 40 → 160 → <span class="highlight">320</span></li>
+<li>仅在最大样本量仍持续违反时才报告</li>
+</ul>
+</div>
+<div class="card-grid">
+<div class="card-sm center-text">
+<div class="num-big">↓ 10x</div>
+<div class="num-label">检测时间降低</div>
+</div>
+<div class="card-sm center-text">
+<div class="num-big">2</div>
+<div class="num-label">整个campaign假阳性数</div>
+</div>
+</div>
+</div>
+
+<!-- Slide 11: Experimental Design -->
+<div class="slide" id="s11">
+<h2>实验设计</h2>
+<div class="card-grid3">
+<div class="card-sm center-text">
+<div class="num-big">4</div>
+<div class="num-label">隔离边界<br>H2V / V2V / K2U / U2U</div>
+</div>
+<div class="card-sm center-text">
+<div class="num-big">6</div>
+<div class="num-label">测试CPU<br>Int1~3 / AMD1~3</div>
+</div>
+<div class="card-sm center-text">
+<div class="num-big">3</div>
+<div class="num-label">配置类别<br>MEM / COMP / REG</div>
+</div>
+</div>
+<div class="card-grid" style="margin-top:16px">
+<div class="card-sm">
+<h3>MEM类：内存错误</h3>
+<p>A/D-bit、E/NPT A/D-bit、P-bit、R-bit、W-bit、E/NPT P/R/W-bit、U-bit（共11种）</p>
+</div>
+<div class="card-sm">
+<h3>COMP类：计算错误</h3>
+<p>除法器状态采样（DSS）——禁用除零防护</p>
+</div>
+<div class="card-sm">
+<h3>REG类：特权寄存器</h3>
+<p>Register/MSR/XSAVE/UMIP/FSGS/VM/SEC/MISC（共10子类）</p>
+</div>
+<div class="card-sm center-text">
+<div class="num-big">304</div>
+<div class="num-label">独立测试campaign<br>88机器天 / 近3000万程序 / 超200亿测量</div>
+</div>
+</div>
+</div>
+
+<!-- Slide 12: New Finding 1 -->
+<div class="slide" id="s12">
+<h2>新发现①：跨VM泄漏</h2>
+<div class="center-text">
+<span class="badge badge-new" style="font-size:1em">CVE-2024-36357</span>
+<span class="badge badge-bad" style="font-size:1em">潜在高影响</span>
+<span class="badge badge-info" style="font-size:1em">AMD3 (Zen4)</span>
+<span class="badge badge-info" style="font-size:1em">V2V / MEM W-bit</span>
+</div>
+<div class="card">
+<p><span class="highlight">机制</span>：攻击者VM加载地址时，若缓存中含受害VM相同虚拟地址（不同host物理地址）的值 → 受害者缓存值影响攻击者后续操作时序 → 逐位推断受害VM任意内存</p>
+</div>
+<pre>a = *p1;           // p1别名指向受害VM地址
+array1[a] = 0;
+*p2 = 0;           // 页故障（写只读页）
+...                 // 算术操作序列
+*p3 = 0;           // 页故障
+c = *p5;           // 任意有效地址
+d = array2[c];     // 缓存暴露点</pre>
+<div class="card" style="margin-top:8px">
+<p><span class="warn">根因尚未公开</span>——AMD将在安全公告中披露。gadget可能只是众多触发方式之一。</p>
+</div>
+</div>
+
+<!-- Slide 13: New Finding 2 -->
+<div class="slide" id="s13">
+<h2>新发现②：内核→用户泄漏</h2>
+<div class="center-text">
+<span class="badge badge-new" style="font-size:1em">CVE-2024-36350</span>
+<span class="badge badge-bad" style="font-size:1em">中高影响</span>
+<span class="badge badge-info" style="font-size:1em">AMD3 (Zen4)</span>
+<span class="badge badge-info" style="font-size:1em">K2U / MEM U-bit</span>
+</div>
+<div class="card">
+<p><span class="highlight">机制</span>：用户进程可观察到最近 <span class="highlight">N≈32</span> 次内核态store操作的任意一位</p>
+<ul>
+<li>即使store在内核态执行，用户态gadget的时序仍依赖其数据</li>
+<li>攻击者可通过额外store选择目标store，通过移位选择泄漏位</li>
+<li>gadget类似跨VM泄漏，但依赖用户态访问内核内存触发的异常</li>
+</ul>
+</div>
+<div class="card">
+<p><span class="warn">影响</span>：攻击者可逐位提取特权数据——观察切换到用户态前的内核store值</p>
+</div>
+</div>
+
+<!-- Slide 14: New Findings 3&4 -->
+<div class="slide" id="s14">
+<h2>新发现③④：AMD RSRR声明被反驳</h2>
+<div class="card-grid">
+<div class="card-sm">
+<h3 style="color:var(--accent2)">③ RDTSCP-AUX特权读取</h3>
+<span class="badge badge-new">CVE-2024-36349</span> <span class="badge badge-info">低影响</span>
+<ul>
+<li>影响: Int1~3 + AMD1</li>
+<li>用户态可推测性读取RDTSCP AUX寄存器，即使CR4.TSD已设置</li>
+<li>AUX通常仅含CPU ID → 安全影响低</li>
+<li><span class="warn">反驳AMD白皮书声称不受RSRR影响</span></li>
+<li>AMD不计划修复</li>
+</ul>
+</div>
+<div class="card-sm">
+<h3 style="color:var(--accent2)">④ SMSW推测执行</h3>
+<span class="badge badge-new">CVE-2024-36348</span> <span class="badge badge-info">低影响但功能违反</span>
+<ul>
+<li>影响: AMD2 + AMD3</li>
+<li>用户态推测性执行SMSW，即使UMIP已启用 → 返回CR0低16位</li>
+<li><span class="warn">实质上绕过了UMIP功能</span></li>
+<li>同样反驳AMD RSRR声明</li>
+<li>AMD不计划修复</li>
+</ul>
+</div>
+</div>
+<div class="card" style="margin-top:12px;text-align:center">
+<p><span class="warn">关键发现：AMD白皮书声称其CPU不受RSRR影响 → 本文在AMD CPU上发现两类RSRR → 声明被实证反驳</span></p>
+</div>
+</div>
+
+<!-- Slide 15: Corroborated Findings -->
+<div class="slide" id="s15">
+<h2>已知漏洞验证：零漏检</h2>
+<table>
+<tr><th>已知攻击</th><th>配置</th><th>结果</th></tr>
+<tr><td>MDS及其变体</td><td>MEM A/D-bit, EPT A/D-bit</td><td><span class="badge badge-good">✓ 检测到</span></td></tr>
+<tr><td>Foreshadow及其RMW变体</td><td>MEM P-bit</td><td><span class="badge badge-good">✓ 检测到</span></td></tr>
+<tr><td>Meltdown</td><td>MEM U-bit</td><td><span class="badge badge-good">✓ 检测到</span></td></tr>
+<tr><td>DSS</td><td>COMP DSS</td><td><span class="badge badge-good">✓ 检测到</span></td></tr>
+<tr><td>Rogue System Register Read</td><td>REG FSGS</td><td><span class="badge badge-good">✓ 检测到(Meltdown-3a变体)</span></td></tr>
+</table>
+<div class="card" style="margin-top:16px;text-align:center">
+<p><span class="highlight">在所有预期发现违规的实验中，均成功发现了违规 —— 零漏检</span></p>
+</div>
+</div>
+
+<!-- Slide 16: Patch Testing -->
+<div class="slide" id="s16">
+<h2>补丁有效性测试</h2>
+<div class="card-grid">
+<div class="card-sm">
+<h3>MDS补丁</h3>
+<ul>
+<li><span class="badge badge-good">✓</span> VERW → 有效</li>
+<li><span class="badge badge-good">✓</span> L1D_FLUSH_CMD → 有效</li>
+<li><span class="badge badge-bad">✗</span> WBINVD → 无效</li>
+</ul>
+</div>
+<div class="card-sm">
+<h3>Foreshadow补丁</h3>
+<ul>
+<li><span class="badge badge-good">✓</span> L1D_FLUSH_CMD → 有效</li>
+<li><span class="badge badge-bad">✗</span> WBINVD → 无效</li>
+</ul>
+</div>
+<div class="card-sm">
+<h3>DSS补丁</h3>
+<ul>
+<li><span class="badge badge-good">✓</span> 当前Linux补丁(1÷1) → 有效</li>
+<li><span class="badge badge-bad">✗</span> 旧补丁(异常处理器中除法) → <span class="warn">无效！差点合入主线！</span></li>
+</ul>
+</div>
+<div class="card-sm">
+<h3>Meltdown补丁(KPTI)</h3>
+<ul>
+<li><span class="badge badge-bad">✗</span> 清除Present位 → 无效</li>
+<li><span class="badge badge-good">✓</span> 完全unmapping → 阻止Meltdown但仍有MDS</li>
+<li><span class="badge badge-good">✓</span> unmapping + VERW → 有效</li>
+</ul>
+</div>
+</div>
+<div class="card" style="margin-top:12px;text-align:center">
+<p><span class="warn">7种补丁变体中3种无效 —— 没有自动化验证，你无法确认补丁真的有效</span></p>
+</div>
+</div>
+
+<!-- Slide 17: Performance -->
+<div class="slide" id="s17">
+<h2>性能指标</h2>
+<div class="card-grid3">
+<div class="card-sm center-text">
+<div class="num-big">800~4500</div>
+<div class="num-label">测量/秒</div>
+</div>
+<div class="card-sm center-text">
+<div class="num-big">60~700</div>
+<div class="num-label">test case/秒</div>
+</div>
+<div class="card-sm center-text">
+<div class="num-big">85%</div>
+<div class="num-label">违规1h内检测</div>
+</div>
+</div>
+<div class="card-grid" style="margin-top:16px">
+<div class="card-sm">
+<h3>完整campaign耗时</h3>
+<ul>
+<li>MEM: 2–24h</li>
+<li>COMP: 3–8h</li>
+<li>REG: 1.5–11h</li>
+</ul>
+</div>
+<div class="card-sm">
+<h3>检测时间</h3>
+<ul>
+<li>85% 在1h内 / 98% 在4h内</li>
+<li>85% 在20K轮内 / 93% 在40K轮内</li>
+<li>4% 漏检率(10次不同seed)</li>
+</ul>
+</div>
+</div>
+</div>
+
+<!-- Slide 18: Limitations -->
+<div class="slide" id="s18">
+<h2>局限性</h2>
+<div class="card-grid">
+<div class="card-sm">
+<h3 style="color:var(--accent3)">工具局限</h3>
+<ul>
+<li>不支持Actor间共享内存</li>
+<li>不支持自修改代码</li>
+<li>IDT/GDT位置固定 → 无法检测控制结构预测泄漏</li>
+<li>测量框架代码影响微架构状态</li>
+<li>仅覆盖泄漏提取型攻击（未覆盖Spectre V2等注入型）</li>
+</ul>
+</div>
+<div class="card-sm">
+<h3 style="color:var(--accent3)">评估局限</h3>
+<ul>
+<li>仅x86——ARM/RISC-V为未来工作</li>
+<li>不支持TDX/SEV-SNP CVM边界</li>
+<li>不支持跨域分支训练/控制流攻击</li>
+<li>某些泄漏需大量测量 → 实验时长可能不足</li>
+<li>AMD1 R/W位违规AMD无法复现</li>
+</ul>
+</div>
+</div>
+</div>
+
+<!-- Slide 19: Significance -->
+<div class="slide" id="s19">
+<h2>领域意义与评价</h2>
+<div class="card-grid">
+<div class="card-sm">
+<h3 style="color:var(--accent4)">方法论突破</h3>
+<ul>
+<li><span class="highlight">首个跨域微架构隔离测试工具</span></li>
+<li>从被动补丁验证 → 主动安全验证</li>
+<li>Actor抽象统一灵活</li>
+<li>模板+宏兼顾结构与随机</li>
+<li>χ²+自适应样本量优雅解决噪声</li>
+</ul>
+</div>
+<div class="card-sm">
+<h3 style="color:var(--accent4)">实验突破</h3>
+<ul>
+<li>4个新CVE（2高+2低但反驳声明）</li>
+<li><span class="warn">反驳AMD RSRR安全声明</span></li>
+<li>发现DSS旧补丁无效（差点合入主线）</li>
+<li>KPTI多种变体有效性差异</li>
+<li>极低假阳性(2/304) + 零漏检已知攻击</li>
+</ul>
+</div>
+<div class="card-sm">
+<h3 style="color:var(--accent4)">实践价值</h3>
+<ul>
+<li>CPU厂商验证工具</li>
+<li>安全研究者PoC平台<br>(Foreshadow < 30行模板汇编)</li>
+<li>开源(Revizor v1.3+)</li>
+</ul>
+</div>
+<div class="card-sm">
+<h3 style="color:var(--accent3)">可质疑之处</h3>
+<ul>
+<li>模型过于简化(全用户态+跳转)</li>
+<li>未覆盖Spectre V2类控制流攻击</li>
+<li>仅x86、4%漏检率</li>
+<li>AMD1违规无法复现</li>
+</ul>
+</div>
+</div>
+</div>
+
+<!-- Slide 20: FAQ -->
+<div class="slide" id="s20">
+<h2>FAQ</h2>
+<div class="card">
+<h3 style="color:var(--accent2)">Q1：为什么不测TDX/SEV-SNP？</h3>
+<ul>
+<li>Actor模式不支持SEAM模式（TDX新增特权级）</li>
+<li>信任模型相反：论文hypervisor可信，CVM中hypervisor不可信</li>
+<li>执行器缺SEAM/RMP等CVM基础设施</li>
+<li>2024年TDX/SEV-SNP硬件可用性有限</li>
+<li>SEC类指令已在REG池中但仅作RSRR测试，非完整CVM域转换</li>
+</ul>
+</div>
+<div class="card">
+<h3 style="color:var(--accent2)">Q2：缓解措施作为"特定指令序列"怎么理解？</h3>
+<ul>
+<li>VERW/L1D_FLUSH/DSS补丁都是每次域转换前必须<span class="highlight">实际执行的指令</span>，不是配置位开关</li>
+<li>必须在域转换<span class="highlight">紧前方</span>执行才有意义（否则buffer可能被重新填充）</li>
+<li>模板机制允许灵活插入缓解序列在不同位置</li>
+</ul>
+</div>
+<div class="card">
+<h3 style="color:var(--accent2)">Q3：测了哪些防护措施？</h3>
+<p>7种补丁变体（VERW ✓、L1D_FLUSH ✓、WBINVD ✗×2、DSS当前 ✓、DSS旧 ✗、KPTI×3），3种无效 → 证明<span class="warn">没有自动化验证无法确认补丁有效</span></p>
+</div>
+</div>
+
+<!-- Slide 21: Conclusion -->
+<div class="slide" id="s21">
+<h1>关键结论</h1>
+<div class="card" style="max-width:800px">
+<ol style="font-size:1.15em;line-height:2">
+<li><span class="highlight">微架构隔离验证亟需自动化工具</span> — 被动式补丁验证屡次失败</li>
+<li><span class="highlight">Actor + MRT</span> 提供了系统性跨域微架构泄漏检测的可行路径</li>
+<li><span class="badge badge-new">4个新CVE</span> 证明工具有效（2高影响 + 2反驳厂商声明）</li>
+<li><span class="warn">AMD RSRR声明被实证反驳</span> — 在AMD CPU上发现两类RSRR漏洞</li>
+<li>补丁验证价值显著 — <span class="badge badge-bad">3种补丁无效</span>（含差点合入主线的DSS补丁）</li>
+<li><span class="highlight">从被动补丁到主动验证的范式转变</span> 是处理器安全设计的未来方向</li>
+</ol>
+</div>
+<div class="center-text" style="margin-top:24px;font-size:1.1em;color:var(--text2)">
+开源工具：https://github.com/microsoft/sca-fuzzer<br>
+AMD安全公告：https://www.amd.com/en/resources/product-security/bulletin/amd-sb-7029.html
+</div>
+</div>
+
+<!-- Navigation -->
+<div class="nav">
+<button onclick="prev()">◀ 上一页</button>
+<button onclick="next()">下一页 ▶</button>
+</div>
+<div class="slide-num" id="slideNum">1 / 21</div>
+
+<script>
+let cur=1,total=21;
+function show(n){
+  if(n<1||n>total)return;
+  document.getElementById('s'+cur).classList.remove('active');
+  cur=n;
+  document.getElementById('s'+cur).classList.add('active');
+  document.getElementById('slideNum').textContent=cur+' / '+total;
+  document.getElementById('progress').style.width=(cur/total*100)+'%';
+}
+function next(){show(cur+1)}
+function prev(){show(cur-1)}
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight'||e.key===' ')next();
+  if(e.key==='ArrowLeft')prev();
+  if(e.key==='Home')show(1);
+  if(e.key==='End')show(total);
+});
+</script>
+</body>
+</html>
