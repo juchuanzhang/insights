@@ -8,7 +8,7 @@
 
 ### 一句话总结
 
-> **从Spectre到IPRED：2018年至今，CPU推测执行漏洞驱动了一场横跨硅片→微码→内核→编译器→虚拟化→浏览器的全栈防御体系重构，旧硬件性能损失可达60%，新硬件正从"打补丁"迈向"架构原生免疫"。**
+> **从Spectre到IPRED_DIS：2018年至今，CPU推测执行漏洞驱动了一场横跨硅片→微码→内核→编译器→虚拟化→浏览器的全栈防御体系重构，旧硬件性能损失可达60%，新硬件正从"打补丁"迈向"架构原生免疫"。**
 
 ### 洞察方向
 
@@ -16,7 +16,7 @@
 
 ### 关键趋势
 
-1. **从被动打补丁到主动硬件免疫**：Intel Granite Rapids（IPRED）、AMD Zen 4、ARM Cortex-X3（CSV2_3）已将推测隔离硬化到硅片中
+1. **从被动打补丁到主动硬件免疫**：Intel Granite Rapids（IPRED_DIS）、AMD Zen 4、ARM Cortex-X3（CSV2_3）已将推测隔离硬化到硅片中
 2. **防御纵深持续下沉**：缓解从OS内核向编译器/运行时/JIT引擎/浏览器沙箱逐层扩展
 3. **性能与安全的永恒博弈**：旧硬件全套防御损失30-60%性能；新硬件降至1-5%，差距持续拉大
 4. **SMT（同时多线程）仍是阿喀琉斯之踵**：Core Scheduling缓解但未根除，安全管理需权衡
@@ -43,7 +43,7 @@
 │  内核层     │ KPTI | IBRS/eIBRS | VERW | RSB填充   │
 │  虚拟化层   │ L1D Flush | Core Scheduling | IBPB    │
 │  微码/固件  │ IBPB | BHI_DIS_S | AGESA | Zenbleed   │
-│  硅片层     │ IPRED | CSV2_3 | DDP | FSFP          │
+│  硅片层     │ IPRED_DIS | CSV2_3 | DDP | FSFP          │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -54,7 +54,7 @@
 | **漏洞发现** | Google Project Zero | Spectre/Meltdown首次披露 |
 | **漏洞发现** | ETH Zurich (ComSec) | Retbleed, Zenbleed |
 | **漏洞发现** | VUSec (VU Amsterdam) | LVI, MDS系列 |
-| **硬件防御** | Intel | eIBRS, IPRED, BHI_DIS_S, VERW |
+| **硬件防御** | Intel | eIBRS, IPRED_DIS, BHI_DIS_S, VERW |
 | **硬件防御** | AMD | LFENCE序列化, PSFD, Inception缓解 |
 | **硬件防御** | ARM | CSV2系列原语, SB指令, BTI, PAC |
 | **OS内核** | Linux内核社区 | KPTI, Retpoline, prctl推测控制API |
@@ -97,7 +97,7 @@
 | 26 | Spectre Mitigations in V8 JIT | JIT方案 | V8 Team | Google | 2018+ | 索引掩码+推测污染追踪+LFENCE插入保护JS引擎 |
 | 27 | BoringSSL Side Channel Defenses | 密码学库 | Google | Google | 持续更新 | 严格常量时间算法+推测屏障原语保护密钥操作 |
 | 28 | JDK 11 Speculative Execution Mitigations | 运行时 | Oracle | Oracle | 2018 | Java JIT使用索引掩码+AOT编译器支持Retpoline |
-| 29 | Intel IPRED & DDP Hardware Protections | 硬件特性 | Intel | Intel | 2024 | Granite Rapids引入间接预测器隔离与数据依赖预取器 |
+| 29 | Intel IPRED_DIS & DDP Hardware Protections | 硬件特性 | Intel | Intel | 2024 | Granite Rapids引入间接预测器禁用控制与数据依赖预取器 |
 | 30 | Hardware-Software Contracts for Secure Speculation | 学术论文 | Guarnieri等 | UC Riverside | 2021.05 | 提出硬件-软件安全推测合约的形式化框架 |
 
 ---
@@ -268,10 +268,10 @@ CPU核心内部：
   ├── 仅支持eIBRS且BHI_NO=0的处理器需要
   └── 性能影响：0-15%
         ↓
-2024 · IPRED (Indirect Predictor) ── Granite Rapids+
-  ├── 间接预测器与直接预测器硬件隔离
-  ├── 模式标签(Modality Tags)防跨特权级污染
-  ├── 同时缓解ITS和IBPD
+2024 · IPRED_DIS (Indirect Predictor Disable) ── Granite Rapids+
+  ├── IPRED_DIS_U: IA32_SPEC_CTRL[3]，按CPL3（用户态）禁用间接预测器
+  ├── IPRED_DIS_S: IA32_SPEC_CTRL[4]，按CPL0/1/2（内核态）禁用间接预测器
+  ├── CPUID.(EAX=7H,ECX=2):EDX[1] IPRED_CTRL枚举
   └── 性能影响：可忽略（硬件原生设计）
 ```
 
@@ -279,7 +279,7 @@ CPU核心内部：
 
 | MSR | 地址 | 核心位 | 功能 |
 |-----|------|--------|------|
-| IA32_SPEC_CTRL | 0x48 | Bit0(IBRS), Bit1(STIBP), Bit2(SSBD) | 推测执行行为控制 |
+| IA32_SPEC_CTRL | 0x48 | Bit0(IBRS), Bit1(STIBP), Bit2(SSBD), Bit3(IPRED_DIS_U), Bit4(IPRED_DIS_S), Bit10(BHI_DIS_S) | 推测执行行为控制 |
 | IA32_PRED_CMD | 0x49 | Bit0(IBPB) | 触发分支预测器刷新 |
 | IA32_ARCH_CAPABILITIES | 0x10A | Bit0~25（多项能力位） | 只读安全能力报告 |
 
@@ -299,7 +299,7 @@ Tiger Lake   ────────  ↑
 Alder Lake (2021) ──── BHI_DIS_S加入
 Raptor Lake (2022) ─── MDS/GDS硬件修复
 Sapphire Rapids (2023) ─── BHI_DIS_S全覆盖
-Granite Rapids (2024) ─── IPRED + DDP → 新生代硬件免疫
+Granite Rapids (2024) ─── IPRED_DIS + DDP → 新生代硬件免疫
 ```
 
 ---
@@ -344,7 +344,7 @@ Granite Rapids (2024) ─── IPRED + DDP → 新生代硬件免疫
 Spectre v2 攻击面 (间接分支推测)
     │
     ├── 硬件层：eIBRS/CSV2 → 隔离跨特权级BTB
-    │   └── 失效场景：BHI绕过eIBRS → 需BHI_DIS_S/IPRED
+    │   └── 失效场景：BHI绕过eIBRS → 需BHI_DIS_S/IPRED_DIS
     │
     ├── 微码层：IBPB → 上下文切换时刷新预测器
     │   └── 失效场景：Retbleed(RSB下溢)绕过IBPB → 需RSB填充
@@ -416,7 +416,7 @@ Spectre v2 攻击面 (间接分支推测)
 ├──────────────────────────────────────────────────────────────────────┤
 │ 第一层 · 硅片硬件                                                      │
 ├──────────────────────────────────────────────────────────────────────┤
-│ IPRED             │ 间/直接预测器物理隔离+模式标签 → 防 Spectre v2/BHI/ITS/IBPD│
+│ IPRED_DIS         │ IA32_SPEC_CTRL[3/4]按特权级禁用间接预测器 → 防 Spectre v2/BHI/ITS│
 │ CSV2_1p1/1p2/2/3  │ ARM硬件特权切换时自动清分支预测器 → 防 Spectre v2 (ARM)│
 │ DDP               │ 预取仅基于数据流依赖非控制流 → 防 数据依赖预取器侧信道│
 │ FSFP              │ 写转发预测仅基于已完成的store-load对 → 防存储转发侧信道│
@@ -437,10 +437,10 @@ Spectre v2 攻击面 (间接分支推测)
 | 防御机制 | Intel Skylake (旧) | Intel Cascade Lake | Intel Granite Rapids | AMD Zen 3 | ARM N1 |
 |----------|-------------------|--------------------|---------------------|-----------|--------|
 | **KPTI** | -15~30% | -2~5% (PCID+HW修复) | <1% | 0% (不受影响) | 0~3% |
-| **Spectre v2** | -5~10% (Retpoline) | 0% (eIBRS) | 0% (IPRED) | 0% (Auto IBRS) | 0% (CSV2_1p1) |
+| **Spectre v2** | -5~10% (Retpoline) | 0% (eIBRS) | 0% (IPRED_DIS) | 0% (Auto IBRS) | 0% (CSV2_1p1) |
 | **MDS/VERW** | -3~8% | -0.5~2% | 0% (HW修复) | 0% | 0% |
 | **L1TF** | -5~15% (含SMT) | -0.5~3% | 0% | 0% | 0% |
-| **BHI** | -2~10% | 0% (BHI_DIS_S) | 0% (IPRED) | -0.5~2% | 0% (CSV2_1p2) |
+| **BHI** | -2~10% | 0% (BHI_DIS_S) | 0% (IPRED_DIS) | -0.5~2% | 0% (CSV2_1p2) |
 | **Retbleed** | -2~14% (RSB) | -0.5~2% | 0% | -2~8% (Zen1/2/3) | -0.5~2% |
 | **GDS** | N/A | -5~10% | 0% | 0% | 0% |
 | **全部启用(最坏)** | **-30~60%** | **-5~15%** | **-2~5%** | **-2~10%** | **-1~5%** |
@@ -593,7 +593,7 @@ Intel IBPB：                          AMD IBPB：
               覆盖范围再被分析... → 循环往复
                     ↓
               终极路径：硅片级硬件重设计，从结构上消除覆盖盲区
-              (IPRED: 间接/直接预测器物理隔离, 无法跨类型污染)
+              (IPRED_DIS: IA32_SPEC_CTRL按特权级禁用间接预测器跨特权级预测)
               (DDP: 预取决策仅基于数据流, 攻击者无法控制)
               (CSV2_3: 所有特权级切换时硬件自动清全部预测状态)
 ```
@@ -610,7 +610,7 @@ Intel IBPB：                          AMD IBPB：
 
 **防御覆盖总览矩阵（按从硅片到应用的层级排列）：**
 
-| 攻击/CVE | IPRED<br>[硅] | IBRS<br>[微] | IBPB<br>[微] | STIBP<br>[微] | SSBD<br>[微] | VERW<br>[微] | BHI_<br>DIS_S<br>[微] | AGESA<br>[固件] | KPTI<br>[核] | RSB<br>填充<br>[核] | Core<br>Sched<br>[核] | L1D<br>Flush<br>[虚] | Retpoline<br>[编] | LFENCE<br>[编] | SLH<br>[编] |
+| 攻击/CVE | IPRED_DIS<br>[硅/微] | IBRS<br>[微] | IBPB<br>[微] | STIBP<br>[微] | SSBD<br>[微] | VERW<br>[微] | BHI_<br>DIS_S<br>[微] | AGESA<br>[固件] | KPTI<br>[核] | RSB<br>填充<br>[核] | Core<br>Sched<br>[核] | L1D<br>Flush<br>[虚] | Retpoline<br>[编] | LFENCE<br>[编] | SLH<br>[编] |
 |----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | **Meltdown** | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ● | ○ | ○ | ○ | ○ | ○ | ○ |
 | **Spectre v1** | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ● | ◐ |
@@ -666,10 +666,10 @@ Intel IBPB：                          AMD IBPB：
 | 攻击类别 | 最小推荐组合 | 最佳推荐组合 | 未覆盖的残余风险 |
 |----------|-------------|-------------|----------------|
 | 推测绕过权限检查 | KPTI + 编译器SLH | KPTI + SLH + 硬件Meltdown免疫 | 旧硬件KPTI性能代价大 |
-| 分支预测器污染 | Retpoline + IBPB | eIBRS + BHI_DIS_S + IPRED | eIBRS被BHI绕过（旧硬件无BHI_DIS_S）|
+| 分支预测器污染 | Retpoline + IBPB | eIBRS + BHI_DIS_S + IPRED_DIS | eIBRS被BHI绕过（旧硬件无BHI_DIS_S）|
 | 缓冲区陈旧数据采样 | VERW (退出内核时) | VERW + SMT禁用/ Core Scheduling | SMT同核线程仍可攻击（如未禁用SMT）|
 | 存储推测绕过 | SSBD (MSR控制) | SSBD + prctl()按进程控制 | 默认off模式下非seccomp进程未保护 |
-| 返回地址预测劫持 | RSB填充 + IBPB | eIBRS + RSB填充 + IPRED | AMD Zen 1/2/3 RSB填充性能影响较大 |
+| 返回地址预测劫持 | RSB填充 + IBPB | eIBRS + RSB填充 + IPRED_DIS | AMD Zen 1/2/3 RSB填充性能影响较大 |
 | 推测性竞态条件 (GhostRace) | 内核同步原语加LFENCE | 硬件推测屏障指令(SB)全覆盖 | 需识别所有敏感竞争点，易遗漏 |
 | AMD瞬态调度器族 (SB-7029) | 等待AGESA更新 | AGESA + SMT禁用 + L1D Flush(VM) | AGESA推送依赖OEM；部分缓解仅限VM边界 |
 | 非推测执行侧信道 (FP差异) | Intel微码更新 | 微码 + 应用层常量时间算法 | 无通用防御；需逐指令类审计 |
@@ -710,7 +710,7 @@ Intel IBPB：                          AMD IBPB：
 2024.03  Native BHI (CVE-2024-2201) 无需eBPF
 2024.10  ITS (Indirect Target Selection) 披露
 2024.12  IBPD (Indirect Branch Predictor Delayed Updates) 披露
-2024      Intel Granite Rapids发布IPRED/DDP硬件级防御
+2024      Intel Granite Rapids引入IPRED_DIS/DDP MSR级防御
   │
 2025-26  持续有新的瞬态执行变体研究发表
 ```
@@ -735,7 +735,7 @@ Intel IBPB：                          AMD IBPB：
      ┌─────────────────────────────────────────────────┐
      │                   硬件防御方                      │
      ├─────────────────────────────────────────────────┤
-     │ Intel    │ 30+微码更新，eIBRS/IPRED/BHI_DIS_S   │
+     │ Intel    │ 30+微码更新，eIBRS/IPRED_DIS/BHI_DIS_S   │
      │ AMD      │ AGESA固件，PSFD，Inception缓解       │
      │ ARM      │ CSV2原语，SB指令，BTI，PAC            │
      │ RISC-V   │ 开放硬件验证，设计阶段纳管推测安全     │
@@ -788,7 +788,7 @@ Intel IBPB：                          AMD IBPB：
 
 ### 关键趋势
 
-1. **硬件安全从"修复"走向"免疫"**：Intel IPRED、ARM CSV2_3、AMD Zen 4+代表推测隔离的硅片级硬化
+1. **硬件安全从"修复"走向"免疫"**：Intel IPRED_DIS、ARM CSV2_3、AMD Zen 4+代表推测隔离的硅片级硬化
 2. **攻击发现从"一次性重大突破"转向"持续长尾"**：ITS、IBPD等2024年新变体证明新的微架构结构仍在成为攻击面
 3. **RISC-V作为"安全重置"机会**：开放架构可以在设计阶段纳管推测安全，避免重蹈x86覆辙
 4. **AI/ML加速器成为新攻击面**：GPU/NPU推测执行的侧信道研究仍处于早期阶段
@@ -799,7 +799,7 @@ Intel IBPB：                          AMD IBPB：
 ```
               新一代硬件 (2024+)
               ┌─────────────────────┐
-              │  IPRED  │  CSV2_3   │
+              │  IPRED_DIS │  CSV2_3   │
               │  DDP    │  BTI/PAC  │
               │  FSFP   │  Zen 5    │
               └────┬───┬──────┬───┬─┘
